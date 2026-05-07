@@ -1,0 +1,26 @@
+{
+    "name": "Kafka Outbound Mirror",
+    "description": "Mirrors Cortex XSOAR incident updates out to Kafka.",
+    "support": "community",
+    "currentVersion": "1.0.0",
+    "author": "Community",
+    "url": "",
+    "email": "",
+    "categories": [
+        "Messaging and Conferencing"
+    ],
+    "tags": [
+        "Kafka",
+        "Mirroring"
+    ],
+    "useCases": [],
+    "keywords": [
+        "kafka",
+        "mirror",
+        "outbound",
+        "incident"
+    ],
+    "marketplaces": [
+        "xsoar"
+    ]
+}

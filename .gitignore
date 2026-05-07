@@ -1,0 +1,7 @@
+.venv/
+.venv-demisto/
+__pycache__/
+*.py[cod]
+.env
+demisto-sdk.log
+id_set.json

@@ -1,0 +1,115 @@
+commonfields:
+  id: KafkaOutboundMirror
+  version: -1
+
+name: KafkaOutboundMirror
+display: Kafka Outbound Mirror
+category: Messaging and Conferencing
+description: Mirrors Cortex XSOAR incident updates out to Kafka.
+fromversion: 6.1.0
+
+configuration:
+- display: CSV list of Kafka brokers, e.g. broker1:9092,broker2:9092
+  name: brokers
+  required: true
+  type: 0
+  section: Connect
+
+- display: Kafka topic to publish incident updates to
+  name: topic
+  required: true
+  type: 0
+  section: Connect
+  defaultvalue: xsoar.incident.events
+
+- display: Use TLS
+  name: use_ssl
+  type: 8
+  required: false
+  section: Connect
+
+- display: Use SASL PLAIN over SSL
+  name: use_sasl
+  type: 8
+  required: false
+  section: Connect
+
+- display: Trust any certificate - not recommended
+  name: insecure
+  type: 8
+  required: false
+  section: Connect
+
+- display: CA certificate of Kafka server
+  name: ca_cert
+  type: 12
+  required: false
+  section: Connect
+
+- display: Client certificate
+  name: client_cert
+  type: 12
+  required: false
+  section: Connect
+
+- display: Client certificate key
+  name: client_cert_key
+  type: 14
+  required: false
+  section: Connect
+
+- displaypassword: Client certificate key password
+  hiddenusername: true
+  name: ssl_key_password
+  type: 9
+  required: false
+  section: Connect
+
+- display: SASL PLAIN Username
+  displaypassword: SASL PLAIN Password
+  name: credentials
+  type: 9
+  required: false
+  section: Connect
+
+- display: Incident Mirroring Direction
+  name: mirror_direction
+  type: 15
+  options:
+  - None
+  - Outgoing
+  defaultvalue: Outgoing
+  required: false
+  section: Collect
+
+- display: Outgoing Entry Tags
+  name: mirror_tag
+  type: 0
+  defaultvalue: xsoar-kafka
+  required: false
+  section: Collect
+  additionalinfo: Only War Room entries with this tag will be mirrored out.
+
+- display: Include full incident snapshot in every Kafka event
+  name: include_full_incident
+  type: 8
+  defaultvalue: "true"
+  required: false
+  section: Collect
+
+script:
+  script: ''
+  type: python
+  subtype: python3
+  dockerimage: demisto/vendors-sdk:1.0.0.3242986
+  isfetch: true
+  runonce: false
+  ismappable: true
+  isremotesyncout: true
+  commands:
+  - name: get-mapping-fields
+    arguments: []
+    description: Returns a simple schema for outgoing mapping.
+
+tests:
+- No tests
