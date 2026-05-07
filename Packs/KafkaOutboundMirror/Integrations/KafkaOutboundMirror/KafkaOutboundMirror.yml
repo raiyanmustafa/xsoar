@@ -97,12 +97,19 @@ configuration:
   required: false
   section: Collect
 
+- display: Wait for incident playbook to complete before publishing
+  name: wait_for_playbook
+  type: 8
+  defaultvalue: "true"
+  required: false
+  section: Collect
+  additionalinfo: When enabled, the first mirror call is suppressed while the playbook is actively running (runStatus in running/pending). The first publish fires once the playbook reaches waiting (user input), completed, or failed - classified as incident_created. After the first publish, every subsequent mirror call publishes regardless of playbook state.
+
 script:
   script: ''
   type: python
   subtype: python3
   dockerimage: demisto/vendors-sdk:1.0.0.3242986
-  isfetch: true
   runonce: false
   ismappable: true
   isremotesyncout: true

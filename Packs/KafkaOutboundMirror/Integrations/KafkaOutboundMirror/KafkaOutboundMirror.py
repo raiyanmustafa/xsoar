@@ -1,4 +1,5 @@
 import json
+import os
 import tempfile
 import time
 import traceback
@@ -11,21 +12,55 @@ from CommonServerPython import *
 from confluent_kafka import Producer
 
 
-def _write_temp_file(content: Optional[str]) -> Optional[str]:
+def _write_temp_file(content: Optional[str], temp_paths: list) -> Optional[str]:
     if not content:
         return None
 
     f = tempfile.NamedTemporaryFile(mode="w", delete=False)
     f.write(content)
     f.close()
+    temp_paths.append(f.name)
     return f.name
+
+
+def _cleanup_temp_files(temp_paths: list) -> None:
+    for path in temp_paths:
+        try:
+            os.unlink(path)
+        except OSError:
+            pass
 
 
 def _bool(value: Any) -> bool:
     return str(value).lower() == "true"
 
 
-def build_kafka_config(params: dict) -> dict:
+CLOSE_FIELDS = ("closeReason", "closeNotes", "closingUserId", "closed")
+INCIDENT_STATUS_CLOSED = 2
+INCOMPLETE_PLAYBOOK_STATES = {"running", "pending"}
+PENDING_REMOTE_ID_PREFIX = "xsoar-pending-"
+
+
+def is_playbook_in_progress(incident: dict) -> bool:
+    return bool(incident.get("playbookId")) and incident.get("runStatus") in INCOMPLETE_PLAYBOOK_STATES
+
+
+def classify_event(parsed_args, delta: dict, is_first_publish: bool = False) -> str:
+    closed_now = any(f in delta for f in CLOSE_FIELDS) or (
+        "status" in delta and parsed_args.inc_status == INCIDENT_STATUS_CLOSED
+    )
+    if closed_now:
+        return "incident_closed"
+    if is_first_publish:
+        return "incident_created"
+    if delta:
+        return "field_change"
+    if parsed_args.entries:
+        return "entry_added"
+    return "incident_mirror_update"
+
+
+def build_kafka_config(params: dict) -> tuple:
     brokers = params.get("brokers")
     if not brokers:
         raise DemistoException("Missing required parameter: brokers")
@@ -40,10 +75,7 @@ def build_kafka_config(params: dict) -> dict:
         "enable.idempotence": True,
         "acks": "all",
     }
-
-    ca_cert_path = _write_temp_file(params.get("ca_cert"))
-    client_cert_path = _write_temp_file(params.get("client_cert"))
-    client_key_path = _write_temp_file(params.get("client_cert_key"))
+    temp_paths: list = []
 
     if use_sasl:
         creds = params.get("credentials") or {}
@@ -62,6 +94,7 @@ def build_kafka_config(params: dict) -> dict:
             }
         )
 
+        ca_cert_path = _write_temp_file(params.get("ca_cert"), temp_paths)
         if ca_cert_path:
             conf["ssl.ca.location"] = ca_cert_path
 
@@ -72,12 +105,15 @@ def build_kafka_config(params: dict) -> dict:
     elif use_ssl:
         conf["security.protocol"] = "SSL"
 
+        ca_cert_path = _write_temp_file(params.get("ca_cert"), temp_paths)
         if ca_cert_path:
             conf["ssl.ca.location"] = ca_cert_path
 
+        client_cert_path = _write_temp_file(params.get("client_cert"), temp_paths)
         if client_cert_path:
             conf["ssl.certificate.location"] = client_cert_path
 
+        client_key_path = _write_temp_file(params.get("client_cert_key"), temp_paths)
         if client_key_path:
             conf["ssl.key.location"] = client_key_path
 
@@ -89,17 +125,17 @@ def build_kafka_config(params: dict) -> dict:
             conf["enable.ssl.certificate.verification"] = False
             conf["ssl.endpoint.identification.algorithm"] = "none"
 
-    return conf
+    return conf, temp_paths
 
 
-def get_producer() -> Producer:
+def get_producer() -> tuple:
     params = demisto.params()
-    conf = build_kafka_config(params)
-    return Producer(conf)
+    conf, temp_paths = build_kafka_config(params)
+    return Producer(conf), temp_paths
 
 
 def publish_to_kafka(topic: str, key: str, payload: dict) -> None:
-    producer = get_producer()
+    producer, temp_paths = get_producer()
     delivery_errors = []
 
     def on_delivery(err, msg):
@@ -110,14 +146,16 @@ def publish_to_kafka(topic: str, key: str, payload: dict) -> None:
                 f"Produced Kafka message topic={msg.topic()} partition={msg.partition()} offset={msg.offset()}"
             )
 
-    producer.produce(
-        topic=topic,
-        key=key,
-        value=json.dumps(payload, default=str, ensure_ascii=False),
-        on_delivery=on_delivery,
-    )
-
-    producer.flush(30)
+    try:
+        producer.produce(
+            topic=topic,
+            key=key,
+            value=json.dumps(payload, default=str, ensure_ascii=False),
+            on_delivery=on_delivery,
+        )
+        producer.flush(30)
+    finally:
+        _cleanup_temp_files(temp_paths)
 
     if delivery_errors:
         raise DemistoException(f"Kafka delivery failed: {delivery_errors}")
@@ -130,10 +168,13 @@ def command_test_module() -> str:
     if not topic:
         raise DemistoException("Missing required parameter: topic")
 
-    producer = get_producer()
+    producer, temp_paths = get_producer()
 
-    # list_topics forces a real broker connection.
-    producer.list_topics(timeout=10)
+    try:
+        # list_topics forces a real broker connection.
+        producer.list_topics(timeout=10)
+    finally:
+        _cleanup_temp_files(temp_paths)
 
     return "ok"
 
@@ -178,6 +219,7 @@ def update_remote_system_command(args: dict) -> str:
     params = demisto.params()
     topic = params.get("topic")
     include_full_incident = _bool(params.get("include_full_incident", True))
+    wait_for_playbook = _bool(params.get("wait_for_playbook", True))
 
     if not topic:
         raise DemistoException("Missing required parameter: topic")
@@ -195,20 +237,38 @@ def update_remote_system_command(args: dict) -> str:
         or "unknown"
     )
 
-    # If this is the first outbound mirror call, XSOAR may not yet have a remote ID.
-    # Kafka does not create a remote ticket, so we use a stable logical remote ID.
-    remote_id = parsed_args.remote_incident_id or f"xsoar-{incident_id}"
+    is_first_publish = (
+        not parsed_args.remote_incident_id
+        or str(parsed_args.remote_incident_id).startswith(PENDING_REMOTE_ID_PREFIX)
+    )
+
+    # Only gate the first publish: suppress while the post-creation playbook is still
+    # actively running automation. `waiting` (manual task / user input) is treated as
+    # "automation done" and triggers the first publish. After the first publish, subsequent
+    # mirror calls always publish regardless of playbook state.
+    if wait_for_playbook and is_first_publish and is_playbook_in_progress(incident):
+        demisto.debug(
+            f"Suppressing Kafka publish for incident {incident_id}: "
+            f"playbookId={incident.get('playbookId')} runStatus={incident.get('runStatus')}"
+        )
+        return parsed_args.remote_incident_id or f"{PENDING_REMOTE_ID_PREFIX}{incident_id}"
+
+    remote_id = f"xsoar-{incident_id}"
+
+    event_type = classify_event(parsed_args, delta, is_first_publish)
 
     payload = {
         "schema_version": "1.0",
         "source": "cortex-xsoar",
-        "event_type": "incident_mirror_update",
+        "event_type": event_type,
         "emitted_at": datetime.now(timezone.utc).isoformat(),
         "emitted_at_epoch_ms": int(time.time() * 1000),
         "xsoar_incident_id": incident_id,
         "mirror_remote_id": remote_id,
         "incident_changed": parsed_args.incident_changed,
         "incident_status": parsed_args.inc_status,
+        "playbook_id": incident.get("playbookId"),
+        "playbook_run_status": incident.get("runStatus"),
         "delta": delta,
         "entries": entries,
     }
