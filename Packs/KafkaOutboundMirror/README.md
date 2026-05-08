@@ -180,7 +180,7 @@ This requires the API key configured in `.env` to have permissions to upload cus
 
 ### 2. Create the integration instance
 
-`Settings → Integrations → Instances → Add instance → Kafka Outbound Mirror`. Set brokers, topic, TLS/SASL, click **Test**. The pre-processing rule is already enabled and references the script by name, so as long as exactly one active `KafkaOutboundMirror` instance exists, no further wiring is needed. For multi-instance deployments, edit the rule and set `instance_name` explicitly per the [Solution overview](#solution-overview).
+`Settings → Integrations → Instances → Add instance → Kafka Outbound Mirror`. Set brokers, topic, TLS/SASL, click **Test**. The pre-processing rule is already enabled and references the `SetKafkaMirrorFields` script by ID, so as long as exactly one active `KafkaOutboundMirror` instance exists, no further wiring is needed. For multi-instance deployments, edit the rule and set `instance_name` explicitly per the [Solution overview](#solution-overview).
 
 That's it — create a test incident to verify (see [Verification](#verification)).
 
