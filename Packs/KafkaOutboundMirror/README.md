@@ -157,32 +157,53 @@ Set on the integration instance.
 
 ## Deployment
 
-The repo's `./sdk` wrapper invokes `demisto-sdk` with `.env` credentials.
+The pack is the unit of deployment. The integration, the pre-processing script, and the pre-processing rule that wires them together all install in one step.
+
+### 1. Validate and upload the pack
 
 ```bash
-# Validate everything in the pack
 ./sdk validate -i Packs/KafkaOutboundMirror
-
-# Upload the integration and the script (item-level — works with a regular API key)
-./sdk upload -i Packs/KafkaOutboundMirror/Integrations/KafkaOutboundMirror
-./sdk upload -i Packs/KafkaOutboundMirror/Scripts/SetKafkaMirrorFields
-
-# Pack-level upload that also deploys the pre-processing rule (requires an API key
-# with marketplace-admin scope; otherwise create the rule once via the UI):
 ./sdk upload -i Packs/KafkaOutboundMirror -z
 ```
 
-After uploading the integration:
+The SDK uploads the pack through the XSOAR pack-upload API as a custom/dev pack. That API skips signature verification for custom packs, which is required because this repository does not produce a Cortex XSOAR-signed Marketplace pack.
 
-1. **Create an instance.** `Settings → Integrations → Instances → Add instance → Kafka Outbound Mirror`. Set brokers, topic, TLS/SASL, click **Test**.
-2. **Wire the pre-processing rule** (only needed if pack-zip upload was unavailable). `Settings → Object Setup → Incidents → Pre-Processing Rules → New Rule`:
-   - Conditions: empty (matches all incidents)
-   - Action: **Run a script**
-   - Script: `SetKafkaMirrorFields`
-   - Args: leave defaults if there is exactly one active Kafka mirror instance; otherwise set `instance_name` to the intended integration instance.
-   - Save and **enable**.
+If you need a file artifact for review or handoff, build one separately:
 
-For incidents that come from a fetching integration's classifier/mapper, you can alternately add the three `dbotMirror*` fields directly to that mapper. The pre-processing rule path is preferred because it covers manually created incidents too.
+```bash
+./sdk prepare-content -i Packs/KafkaOutboundMirror -o /tmp/kafka-pack-build
+```
+
+`prepare-content` writes `/tmp/kafka-pack-build.zip`. The archive contains the unified integration, the unified script, the pre-processing rule, and the pack metadata, but some XSOAR UI import paths only accept signed Marketplace packs and will reject this unsigned ZIP. Use SDK/API upload for installation.
+
+This requires the API key configured in `.env` to have permissions to upload custom/dev packs. If the upload fails with authorization errors, use an admin-scoped key or ask an XSOAR admin to run the command.
+
+### 2. Create the integration instance
+
+`Settings → Integrations → Instances → Add instance → Kafka Outbound Mirror`. Set brokers, topic, TLS/SASL, click **Test**. The pre-processing rule is already enabled and references the script by name, so as long as exactly one active `KafkaOutboundMirror` instance exists, no further wiring is needed. For multi-instance deployments, edit the rule and set `instance_name` explicitly per the [Solution overview](#solution-overview).
+
+That's it — create a test incident to verify (see [Verification](#verification)).
+
+### Developer iteration
+
+For fast feedback while editing the integration code or the pre-processing script — *after* the pack has been installed once via step 2 — upload them item-by-item without rebuilding the ZIP:
+
+```bash
+./sdk upload -i Packs/KafkaOutboundMirror/Integrations/KafkaOutboundMirror
+./sdk upload -i Packs/KafkaOutboundMirror/Scripts/SetKafkaMirrorFields
+```
+
+Item-level upload is only for updating the integration or script after the pack has already been installed. Pre-processing rules are not reliably item-uploadable through the SDK, so the first install must go through pack upload. Afterwards the rule lives on the server and code-only changes can iterate item-level.
+
+For incidents that come from a fetching integration's classifier/mapper, you can alternately add the three `dbotMirror*` fields directly to that mapper. The pre-processing rule shipped in the pack is preferred because it covers manually created incidents too.
+
+### Upload troubleshooting
+
+| Symptom | Cause | Fix |
+| --- | --- | --- |
+| UI import says the file is not a signed Cortex XSOAR Content Pack | The ZIP is an unsigned custom/dev pack, not a Marketplace-signed pack. | Use `./sdk upload -i Packs/KafkaOutboundMirror -z`, which uploads through the custom/dev pack API with signature verification skipped. |
+| SDK upload shows `FAILED UPLOADS ... Unauthorized` | The API key reached the pack-upload endpoint but does not have permission to upload custom/dev packs. | Use an admin-scoped API key or ask an XSOAR admin to run the SDK upload. `--skip_validation` does not fix authorization failures. |
+| Item-level upload works but the pre-processing rule is missing | Integration/script item upload does not install `PreProcessRules`. | Install the pack with `./sdk upload -i Packs/KafkaOutboundMirror -z` first, then use item-level upload only for later code iterations. |
 
 ---
 
@@ -224,7 +245,10 @@ Other useful hidden commands: `!getMirrorStatistics`, `!getSyncMirrorRecords`.
 ## Tests
 
 ```bash
+.venv/bin/python -m pytest Packs/KafkaOutboundMirror/Scripts/SetKafkaMirrorFields/SetKafkaMirrorFields_test.py
 .venv/bin/python -m pytest Packs/KafkaOutboundMirror/Integrations/KafkaOutboundMirror/KafkaOutboundMirror_test.py
+./sdk validate -i Packs/KafkaOutboundMirror
+./sdk prepare-content -i Packs/KafkaOutboundMirror -o /tmp/kafka-pack-build
 ```
 
-Covers Kafka config building (plain / SASL / SSL), the event classifier, the playbook gate, the sentinel-based "first real publish" detection, and payload shape.
+Covers Kafka config building (plain / SASL / SSL), the event classifier, the playbook gate, the sentinel-based "first real publish" detection, payload shape, pre-processing script instance selection, pack validation, and pack ZIP generation.
