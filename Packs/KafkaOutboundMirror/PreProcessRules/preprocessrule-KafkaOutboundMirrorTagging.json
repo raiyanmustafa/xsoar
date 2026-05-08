@@ -1,0 +1,14 @@
+{
+    "id": "kafka-outbound-mirror-tagging",
+    "name": "Kafka Outbound Mirror - Tag every incident",
+    "description": "Sets dbotMirrorDirection, dbotMirrorInstance, and dbotMirrorTags on every new incident via the SetKafkaMirrorFields script so the Kafka Outbound Mirror integration receives every incident.",
+    "fromVersion": "6.8.0",
+    "version": -1,
+    "ruleStatus": "enabled",
+    "conditions": [],
+    "newEventFilters": [],
+    "existingEventsFilters": [],
+    "action": "newAction",
+    "actionScriptName": "SetKafkaMirrorFields",
+    "actionScriptArgs": {}
+}
