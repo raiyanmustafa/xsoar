@@ -4,11 +4,27 @@ from CommonServerPython import *
 KAFKA_BRAND = "KafkaOutboundMirror"
 
 
-def find_kafka_instance():
+def find_kafka_instances():
     modules = demisto.getModules() or {}
+    instances = []
     for name, mod in modules.items():
         if mod.get("brand") == KAFKA_BRAND and mod.get("state") == "active":
-            return name
+            instances.append(name)
+    return instances
+
+
+def find_kafka_instance():
+    instances = find_kafka_instances()
+
+    if len(instances) == 1:
+        return instances[0]
+
+    if len(instances) > 1:
+        return_error(
+            f"Multiple active {KAFKA_BRAND} integration instances found: {', '.join(sorted(instances))}. "
+            "Pass instance_name explicitly in the pre-processing rule arguments."
+        )
+
     return None
 
 
@@ -28,9 +44,14 @@ def main():
     incident["dbotMirrorInstance"] = instance_name
     incident["dbotMirrorTags"] = [tag]
 
-    demisto.executeCommand("setIncident", {"dbotMirrorDirection": "Out"})
-    demisto.executeCommand("setIncident", {"dbotMirrorInstance": instance_name})
-    demisto.executeCommand("setIncident", {"dbotMirrorTags": [tag]})
+    demisto.executeCommand(
+        "setIncident",
+        {
+            "dbotMirrorDirection": "Out",
+            "dbotMirrorInstance": instance_name,
+            "dbotMirrorTags": [tag],
+        },
+    )
 
     demisto.results(incident)
 
