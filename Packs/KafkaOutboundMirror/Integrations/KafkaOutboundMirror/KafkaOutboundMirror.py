@@ -1,5 +1,6 @@
 import json
 import os
+import re
 import tempfile
 import time
 import traceback
@@ -33,6 +34,30 @@ def _cleanup_temp_files(temp_paths: list) -> None:
 
 def _bool(value: Any) -> bool:
     return str(value).lower() == "true"
+
+
+UNSAFE_TOPIC_CHAR_RE = re.compile(r"[^a-z0-9_-]+")
+
+
+def sanitize_topic_segment(value: Any, fallback: str) -> str:
+    cleaned = UNSAFE_TOPIC_CHAR_RE.sub("_", str(value or "").lower()).strip("_")
+    return cleaned or fallback
+
+
+def get_incident_field(incident: dict, field_name: str) -> Any:
+    """Read an incident field, falling back to CustomFields if not at the top level."""
+    if not incident:
+        return None
+    value = incident.get(field_name)
+    if value:
+        return value
+    return (incident.get("CustomFields") or {}).get(field_name)
+
+
+def build_topic(topic_prefix: str, incident: dict) -> str:
+    account = sanitize_topic_segment(incident.get("account"), "default")
+    entity = sanitize_topic_segment(get_incident_field(incident, "entity"), "unknown")
+    return f"{topic_prefix.rstrip('.')}.{account}.{entity}"
 
 
 CLOSE_FIELDS = ("closeReason", "closeNotes", "closingUserId", "closed")
@@ -217,12 +242,12 @@ def update_remote_system_command(args: dict) -> str:
     - status: incident status
     """
     params = demisto.params()
-    topic = params.get("topic")
+    topic_prefix = params.get("topic")
     include_full_incident = _bool(params.get("include_full_incident", True))
     wait_for_playbook = _bool(params.get("wait_for_playbook", True))
 
-    if not topic:
-        raise DemistoException("Missing required parameter: topic")
+    if not topic_prefix:
+        raise DemistoException("Missing required parameter: topic prefix")
 
     parsed_args = UpdateRemoteSystemArgs(args)
 
@@ -275,6 +300,8 @@ def update_remote_system_command(args: dict) -> str:
 
     if include_full_incident:
         payload["incident"] = incident
+
+    topic = build_topic(topic_prefix, incident)
 
     # This makes Kafka ordering sane per incident.
     publish_to_kafka(topic=topic, key=incident_id, payload=payload)

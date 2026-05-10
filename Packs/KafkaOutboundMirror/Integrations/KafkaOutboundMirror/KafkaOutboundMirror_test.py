@@ -125,7 +125,7 @@ def test_update_remote_system_publishes_payload_and_returns_stable_remote_id(kaf
     monkeypatch.setattr(
         kafka_module.demisto,
         "params",
-        lambda: {"topic": "xsoar.incident.events", "include_full_incident": "true"},
+        lambda: {"topic": "xsoar.incidents", "include_full_incident": "true"},
     )
     monkeypatch.setattr(kafka_module.time, "time", lambda: 1234.567)
     monkeypatch.setattr(
@@ -136,7 +136,12 @@ def test_update_remote_system_publishes_payload_and_returns_stable_remote_id(kaf
 
     remote_id = kafka_module.update_remote_system_command(
         {
-            "data": {"id": "12345", "name": "Example Incident"},
+            "data": {
+                "id": "12345",
+                "name": "Example Incident",
+                "account": "Development",
+                "entity": "Phishing",
+            },
             "delta": {"severity": 3},
             "entries": [{"id": "entry-1"}],
             "incidentChanged": True,
@@ -145,13 +150,13 @@ def test_update_remote_system_publishes_payload_and_returns_stable_remote_id(kaf
     )
 
     assert remote_id == "xsoar-12345"
-    assert published["topic"] == "xsoar.incident.events"
+    assert published["topic"] == "xsoar.incidents.development.phishing"
     assert published["key"] == "12345"
     assert published["payload"]["xsoar_incident_id"] == "12345"
     assert published["payload"]["mirror_remote_id"] == "xsoar-12345"
     assert published["payload"]["delta"] == {"severity": 3}
     assert published["payload"]["entries"] == [{"id": "entry-1"}]
-    assert published["payload"]["incident"] == {"id": "12345", "name": "Example Incident"}
+    assert published["payload"]["incident"]["id"] == "12345"
     assert published["payload"]["emitted_at_epoch_ms"] == 1234567
     # No remoteId passed in args, so this is the first mirror call.
     assert published["payload"]["event_type"] == "incident_created"
@@ -203,6 +208,70 @@ def test_classify_event_entry_added_when_no_delta(kafka_module):
 def test_classify_event_falls_back_when_nothing_changed(kafka_module):
     args = _make_args(kafka_module, delta={}, entries=[])
     assert kafka_module.classify_event(args, args.delta) == "incident_mirror_update"
+
+
+@pytest.mark.parametrize(
+    "value,fallback,expected",
+    [
+        ("Development", "default", "development"),
+        ("My Type", "unknown", "my_type"),
+        ("Phishing-Email", "unknown", "phishing-email"),
+        ("a.b.c", "unknown", "a_b_c"),
+        ("Multiple   Spaces", "unknown", "multiple_spaces"),
+        ("", "unknown", "unknown"),
+        (None, "default", "default"),
+        ("___", "default", "default"),
+    ],
+)
+def test_sanitize_topic_segment(kafka_module, value, fallback, expected):
+    assert kafka_module.sanitize_topic_segment(value, fallback) == expected
+
+
+def test_build_topic_lowercases_and_appends_account_and_entity(kafka_module):
+    topic = kafka_module.build_topic(
+        "xsoar.incidents", {"account": "Production", "entity": "Malware"}
+    )
+    assert topic == "xsoar.incidents.production.malware"
+
+
+def test_build_topic_reads_entity_from_custom_fields_when_top_level_missing(kafka_module):
+    topic = kafka_module.build_topic(
+        "xsoar.incidents",
+        {"account": "Production", "CustomFields": {"entity": "Phishing"}},
+    )
+    assert topic == "xsoar.incidents.production.phishing"
+
+
+def test_build_topic_top_level_entity_wins_over_custom_fields(kafka_module):
+    topic = kafka_module.build_topic(
+        "xsoar.incidents",
+        {
+            "account": "Production",
+            "entity": "Malware",
+            "CustomFields": {"entity": "Phishing"},
+        },
+    )
+    assert topic == "xsoar.incidents.production.malware"
+
+
+def test_build_topic_uses_fallbacks_for_missing_account_and_entity(kafka_module):
+    topic = kafka_module.build_topic("xsoar.incidents", {})
+    assert topic == "xsoar.incidents.default.unknown"
+
+
+def test_build_topic_ignores_incident_type_when_entity_missing(kafka_module):
+    # Defensive: even if `type` is set, we must not fall back to it.
+    topic = kafka_module.build_topic(
+        "xsoar.incidents", {"account": "Dev", "type": "Phishing"}
+    )
+    assert topic == "xsoar.incidents.dev.unknown"
+
+
+def test_build_topic_strips_trailing_dots_from_prefix(kafka_module):
+    topic = kafka_module.build_topic(
+        "xsoar.incidents.", {"account": "Dev", "entity": "Phishing"}
+    )
+    assert topic == "xsoar.incidents.dev.phishing"
 
 
 def test_is_playbook_in_progress(kafka_module):

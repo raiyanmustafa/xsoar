@@ -13,7 +13,7 @@ A downstream system (analytics warehouse, external case tracker, external SIEM, 
 
 Polling is operationally bad: it adds load, scales poorly, lags reality, and couples the consumer to XSOAR's API surface. Reading the database directly is worse.
 
-This pack implements the push pattern. XSOAR pushes Kafka events from outbound mirror invocations. Downstream subscribes to one topic and is free of XSOAR.
+This pack implements the push pattern. XSOAR pushes Kafka events from outbound mirror invocations. Each event is routed to a topic named `<prefix>.<account>.<entity>`, where `entity` is read off the incident, so downstream consumers can subscribe per tenant and per entity.
 
 The contract is simple: **each outbound mirror invocation with relevant incident changes → one Kafka event containing the cumulative delta**. XSOAR may batch multiple edits into one mirror invocation, and the first publish may be delayed until the incident playbook reaches a settled state.
 
@@ -64,10 +64,10 @@ The default pre-processing rule is intended for deployments with one active `Kaf
                                 +-------------------+
                                           |
                                           v
-                                +-------------------+
-                                |    Kafka topic    |
-                                | xsoar.incident.events
-                                +-------------------+
+                                +-----------------------------------+
+                                | Kafka topic                       |
+                                | <prefix>.<account>.<entity>       |
+                                +-----------------------------------+
                                           |
                                           v
                                   downstream consumer
@@ -117,8 +117,8 @@ The gate can be disabled per instance via the `Wait for incident playbook to com
 }
 ```
 
-- **Partition key:** `xsoar_incident_id`. Per-incident ordering is preserved across all event types.
-- **Topic:** single topic, classified via `event_type`. Standard CDC pattern (think Debezium / Outbox).
+- **Partition key:** `xsoar_incident_id`. Per-incident ordering is preserved within the topic the incident is published to.
+- **Topic:** `<prefix>.<account>.<entity>`, lowercased, with non-Kafka-safe characters replaced by `_`. `entity` is read from the incident's `entity` field — top-level first, then `CustomFields.entity`. Empty `account` falls back to `default`; missing `entity` falls back to `unknown`. Each topic carries all event types (`incident_created`, `field_change`, etc.) for that account/entity pair, classified via `event_type`. Per-incident ordering is preserved as long as the incident's account and entity don't change mid-life — see [Design decisions](#design-decisions).
 - **Idempotence:** the producer uses `enable.idempotence=true` and `acks=all`.
 
 ---
@@ -130,7 +130,9 @@ The gate can be disabled per instance via the `Wait for incident playbook to com
 | Outbound only (`isremotesyncout: true`, no `isfetch`) | The integration only emits. Setting `isfetch: true` would schedule a `fetch-incidents` call the integration does not implement, generating error noise. |
 | Suppress publish while `runStatus in {running, pending}` for the first publish only | Avoids publishing a half-built incident before the post-creation playbook settles. After first publish, gate is released so subsequent edits flow normally. |
 | `waiting` does **not** suppress | Manual-task pauses are interpreted as "automation finished, awaiting human" — that is the natural moment to publish the first snapshot. |
-| Classify event types in payload, not topic | One topic preserves per-incident ordering. Consumers filter on `event_type`. |
+| Classify event types in payload, not topic | Event-type-per-topic would multiply topics by 5x and break per-incident ordering across types. The topic split we do use (`<account>.<entity>`) is along stable axes that don't change mid-incident. |
+| Topic per `<account>.<entity>` | Lets a downstream consumer subscribe per tenant or per entity without filtering. Both are stable for an incident's lifetime, so per-incident ordering is preserved within its topic. |
+| `entity` is a field on the incident, not the incident `type` | Operators choose which axis they want to fan out by populating `entity` on each incident (top-level field or `CustomFields.entity`). The integration deliberately does not fall back to `type` — that would silently route incidents to a topic the operator didn't intend. |
 | Include full incident snapshot by default | Lets the consumer be stateless. Toggle off if payload size is a concern. |
 | Auto-discover integration instance in the pre-processing script | One pack handles any single-instance deployment without hardcoding. Multi-instance deployments must pass `instance_name` explicitly to avoid ambiguous routing. |
 | No application-level debouncing / field filtering | XSOAR's mirror engine already batches changes within a 1-minute cycle. A single `update-remote-system` call carries the cumulative delta, so a 30-second flurry of edits becomes one Kafka event. |
@@ -144,7 +146,7 @@ Set on the integration instance.
 | Field | Required | Default | Notes |
 | --- | --- | --- | --- |
 | Brokers | Yes | — | CSV of broker hostports. |
-| Topic | Yes | `xsoar.incident.events` | Single topic for all event types. |
+| Kafka topic prefix | Yes | `xsoar.incidents` | The actual topic published to is `<prefix>.<account>.<entity>` (lowercased, sanitized). `entity` is read from the incident's `entity` field (top-level or `CustomFields.entity`). |
 | Use TLS / Use SASL PLAIN over SSL | No | off | Pick one or neither. |
 | CA cert / Client cert / Client cert key / Key password | No | — | Provided as PEM bodies in the UI; written to ephemeral temp files at runtime and cleaned up after each call. |
 | SASL credentials | No | — | Username/password pair for SASL_SSL/PLAIN. |
@@ -209,11 +211,16 @@ For incidents that come from a fetching integration's classifier/mapper, you can
 
 ## Verification
 
-Create a test incident. In a Kafka shell:
+Create a test incident. In a Kafka shell, subscribe with a prefix glob (or a specific topic if you know the account and type):
 
 ```bash
+# All events for the Development account:
 kafka-console-consumer --bootstrap-server <broker>:9092 \
-  --topic xsoar.incident.events --from-beginning
+  --include "xsoar\.incidents\.development\..*" --from-beginning
+
+# Or a specific topic, e.g. all Phishing incidents in the Development account:
+kafka-console-consumer --bootstrap-server <broker>:9092 \
+  --topic xsoar.incidents.development.phishing --from-beginning
 ```
 
 Expected sequence for a typical incident:

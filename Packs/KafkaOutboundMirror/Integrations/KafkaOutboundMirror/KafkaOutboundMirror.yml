@@ -15,12 +15,13 @@ configuration:
   type: 0
   section: Connect
 
-- display: Kafka topic to publish incident updates to
+- display: Kafka topic prefix
   name: topic
   required: true
   type: 0
   section: Connect
-  defaultvalue: xsoar.incident.events
+  defaultvalue: xsoar.incidents
+  additionalinfo: Topic published per incident is `<prefix>.<account>.<entity>`. Entity is read from the incident's `entity` field (top level or CustomFields). Segments are lowercased and non-Kafka-safe characters are replaced with underscores. Empty account/entity falls back to `default`/`unknown`.
 
 - display: Use TLS
   name: use_ssl
